@@ -1,0 +1,146 @@
+* GLM Lightning Processing
+
+This is simple processer for the NOAA GOES GLM Lightning processing.  This
+consists of a Makfile that downloads the required datasets from the Amazon S3
+storage, and then processes these datasets into two CSV files.
+
+There is a simple NCL processing script ~flashes_datasets_DDD.ncl~ that is used
+to convert one GLM nc file, appending to the days csv files.
+
+You run the makefile, specifing the year and julian day you are interested in.
+
+#+BEGIN_SRC bash
+make yyyy=2021 j=189 files flashes clean-cache
+#+END_SRC
+
+This isn't a really time efficient methodology.  It takes about 2 minutes to
+download the 500Mb of files for a day.  There are about 4K files per day, and
+then it takes about 20 minutes (!) to run the ncl script over those 4K files.
+
+** CSV format
+
+*** datasets.csv
+
+This file is the global metadata for the datasets. The data includes the NOAA
+provided id, the dataset_name and then three timestamps.  The creation time, and
+the start and end time for the duration covered by that file.  The files cover
+about 20 seconds each.
+
+*** flashes.csv
+
+The flashes.csv file contains the flash information.
+
+* flash_id - unique ID for the flash (within the dataset only?)
+* dataset_id - pointer back to the dataset id with the data
+* time_offset_of_first_event / time_offset_of_last_event
+
+These integer values that when converted describes the time the flash event
+started and ended.  It is parameterized, and requires the start event of the time.
+
+#+BEGIN_EXAMPLE
+        short flash_time_offset_of_first_event(number_of_flashes) ;
+                flash_time_offset_of_first_event:long_name = "GLM L2+ Lightning Detection: time of occurrence of first constituent event in flash" ;
+                flash_time_offset_of_first_event:standard_name = "time" ;
+                flash_time_offset_of_first_event:_Unsigned = "true" ;
+                flash_time_offset_of_first_event:scale_factor = 0.0003814756f ;
+                flash_time_offset_of_first_event:add_offset = -5.f ;
+                flash_time_offset_of_first_event:units = "seconds since 2021-06-24 12:20:20.000" ;
+                flash_time_offset_of_first_event:axis = "T" ;
+        short flash_time_offset_of_last_event(number_of_flashes) ;
+                flash_time_offset_of_last_event:long_name = "GLM L2+ Lightning Detection: time of occurrence of last constituent event in flash" ;
+                flash_time_offset_of_last_event:standard_name = "time" ;
+                flash_time_offset_of_last_event:_Unsigned = "true" ;
+                flash_time_offset_of_last_event:scale_factor = 0.0003814756f ;
+                flash_time_offset_of_last_event:add_offset = -5.f ;
+                flash_time_offset_of_last_event:units = "seconds since 2021-06-24 12:20:20.000" ;
+#+END_EXAMPLE
+
+* lat and lon
+Weighted flash point location
+
+#+BEGIN_EXAMPLE
+        float flash_lat(number_of_flashes) ;
+                flash_lat:long_name = "GLM L2+ Lightning Detection: flash centroid (mean constituent event latitude weighted by their energies) latitude coordinate" ;
+                flash_lat:standard_name = "latitude" ;
+                flash_lat:units = "degrees_north" ;
+                flash_lat:axis = "Y" ;
+        float flash_lon(number_of_flashes) ;
+                flash_lon:long_name = "GLM L2+ Lightning Detection: flash centroid (mean constituent event latitude weighted by their energies) longitude coordinate" ;
+                flash_lon:standard_name = "longitude" ;
+                flash_lon:units = "degrees_east" ;
+                flash_lon:axis = "X" ;
+
+#+END_EXAMPLE
+
+* area
+Quantized size of the flash
+
+#+BEGIN_EXAMPLE
+        short flash_area(number_of_flashes) ;
+                flash_area:_FillValue = -1s ;
+                flash_area:long_name = "GLM L2+ Lightning Detection: flash area coverage (pixels containing at least one constituent event only)" ;
+                flash_area:_Unsigned = "true" ;
+                flash_area:valid_range = 0s, -6s ;
+                flash_area:scale_factor = 152601.9f ;
+                flash_area:add_offset = 0.f ;
+                flash_area:units = "m2" ;
+                flash_area:coordinates = "group_parent_flash_id flash_id lightning_wavelength flash_time_threshold flash_time_offset_of_first_event flash_time_offset_of_last_event flash_lat flash_lon" ;
+                flash_area:grid_mapping = "goes_lat_lon_projection" ;
+                flash_area:cell_methods = "lightning_wavelength: sum flash_time_offset_of_first_event: flash_time_offset_of_last_event: sum area: sum (interval: 8 km comment: resolution of sensor data at nadir, area of constituent groups\' areas defined by variable group_parent_flash_id) where cloud" ;
+
+#+END_EXAMPLE
+
+* energy
+Quantized energy of the flash
+#+BEGIN_EXAMPLE
+        short flash_energy(number_of_flashes) ;
+                flash_energy:_FillValue = -1s ;
+                flash_energy:long_name = "GLM L2+ Lightning Detection: flash radiant energy" ;
+                flash_energy:standard_name = "lightning_radiant_energy" ;
+                flash_energy:_Unsigned = "true" ;
+                flash_energy:valid_range = 0s, -6s ;
+                flash_energy:scale_factor = 9.99996e-16f ;
+                flash_energy:add_offset = 2.8515e-16f ;
+                flash_energy:units = "J" ;
+                flash_energy:coordinates = "group_parent_flash_id flash_id lightning_wavelength flash_time_threshold flash_time_offset_of_first_event flash_time_offset_of_last_event flash_lat flash_lon" ;
+                flash_energy:grid_mapping = "goes_lat_lon_projection" ;
+                flash_energy:cell_measures = "area: flash_area" ;
+                flash_energy:cell_methods = "lightning_wavelength: sum flash_time_offset_of_first_event: flash_time_offset_of_last_event: sum area: mean (centroid location of constituent events defined by variables group_parent_flash_id and event_parent_group_id weighted by their radiant energies) where cloud" ;
+                flash_energy:ancillary_variables = "flash_quality_flag" ;
+
+#+END_EXAMPLE
+
+* quality_flag
+Whether the flash is good or not
+
+#+BEGIN_EXAMPLE
+        short flash_quality_flag(number_of_flashes) ;
+                flash_quality_flag:_FillValue = -1s ;
+                flash_quality_flag:long_name = "GLM L2+ Lightning Detection: flash data quality flags" ;
+                flash_quality_flag:standard_name = "status_flag" ;
+                flash_quality_flag:_Unsigned = "true" ;
+                flash_quality_flag:valid_range = 0s, 5s ;
+                flash_quality_flag:units = "1" ;
+                flash_quality_flag:coordinates = "flash_id lightning_wavelength flash_time_threshold flash_time_offset_of_first_event flash_time_offset_of_last_event flash_lat flash_lon" ;
+                flash_quality_flag:grid_mapping = "goes_lat_lon_projection" ;
+                flash_quality_flag:cell_methods = "lightning_wavelength: sum flash_time_offset_of_first_event: flash_time_offset_of_last_event: sum area: mean (centroid location of constituent events defined by variables group_parent_flash_id and event_parent_group_id weighted by their radiant energies) where cloud" ;
+                flash_quality_flag:flag_values = 0s, 1s, 3s, 5s ;
+                flash_quality_flag:flag_meanings = "good_quality_qf degraded_due_to_flash_constituent_events_out_of_time_order_qf degraded_due_to_flash_constituent_event_count_exceeds_threshold_qf degraded_due_to_flash_duration_exceeds_threshold_qf" ;
+                flash_quality_flag:number_of_qf_values = 4b ;
+                flash_quality_flag:percent_good_quality_qf = 1.f ;
+                flash_quality_flag:percent_degraded_due_to_flash_constituent_events_out_of_time_order_qf = 0.f ;
+                flash_quality_flag:percent_degraded_due_to_flash_constituent_event_count_exceeds_threshold_qf = 0.f ;
+                flash_quality_flag:percent_degraded_due_to_flash_duration_exceeds_threshold_qf = 0.f ;
+
+#+END_EXAMPLE
+
+** Additional Information
+
+We are only interested in lightning flashes.  The GML [[https://www.star.nesdis.noaa.gov/goesr/documents/ATBDs/Baseline/ATBD_GOES-R_GLM_v3.0_Jul2012.pdf][ATBD]] includes the
+processing from lightning events to groups to flashes.
+
+Information regarding the GOES downloads can be found at the [[https://registry.opendata.aws/noaa-goes/][NOAA GOES Opendata
+Registry]] or the direct [[https://noaa-goes17.s3.amazonaws.com/index.html#GLM-L2-LCFA/2018/][AWS Link]]
+
+There is also some literature comparing the GOES GML to models
+[[https://doi.org/10.1175/WAF-D-19-0141.1]]

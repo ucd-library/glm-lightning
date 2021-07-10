@@ -1,0 +1,10 @@
+csv
+GLM-L2-LCFA
+
+# Temporary files
+DDD.ncl
+*.nc
+
+#EMACS stuff
+*~
+*#
