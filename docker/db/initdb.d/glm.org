@@ -1,0 +1,166 @@
+* GOES GLM Lightning
+#+PROPERTY: header-args:sql :engine postgresql :cmdline "service=glm" :tangle yes
+
+The GLM Lightning product needs to be imported from some CSV files.
+
+
+First, let's put all our data into a glm schema
+
+#+BEGIN_SRC sql
+drop schema if exists glm cascade;
+create schema glm;
+#+END_SRC
+
+#+RESULTS:
+| DROP SCHEMA   |
+|---------------|
+| CREATE SCHEMA |
+
+Currently we have GOES16 and GOES17 data.
+
+#+BEGIN_SRC sql
+create type platform_type as ENUM('G16','G17');
+#+END_SRC
+
+#+RESULTS:
+| CREATE TYPE |
+|-------------|
+
+The dataset table primarily stores the start and stop times for the datasets.
+These are used to create exact times for the flashes.  We'll also validate that
+we never add the same datasets twice.  I don't know that dataset names are
+included, and we need to verify the dataset id is the same.
+
+#+BEGIN_SRC sql
+create table glm.dataset (
+       dataset_id uuid primary key,
+       platform_id platform_type not null,
+       dataset_name text unique,
+       date_created timestamp not null,
+       time_coverage_start timestamp not null,
+       time_coverage_end timestamp not null
+       );
+#+END_SRC
+
+#+RESULTS:
+| CREATE TABLE |
+|--------------|
+
+#+BEGIN_SRC sql
+create table glm.flash (
+ flash_id integer not null,
+ dataset_id uuid references glm.dataset,
+ time_offset_of_first_event integer,
+ time_offset_of_last_event integer,
+ lat float,
+ lon float,
+ area integer,
+ energy integer,
+ quality_flag integer);
+
+create index flash_dataset_id on flash(dataset_id);
+
+#+END_SRC
+
+#+RESULTS:
+| CREATE TABLE |
+|--------------|
+
+As an aside, you can get a review of the indexes that we do have with the
+following query
+
+
+#+BEGIN_SRC sql :tangle no
+select tablename,indexname,indexdef
+from pg_indexes
+where schemaname='glm';
+#+END_SRC
+
+#+RESULTS:
+| tablename | indexname                | indexdef                                                                               |
+|-----------+--------------------------+----------------------------------------------------------------------------------------|
+| dataset   | dataset_pkey             | CREATE UNIQUE INDEX dataset_pkey ON glm.dataset USING btree (dataset_id)               |
+| dataset   | dataset_dataset_name_key | CREATE UNIQUE INDEX dataset_dataset_name_key ON glm.dataset USING btree (dataset_name) |
+| flash     | flash_dataset_id         | CREATE INDEX flash_dataset_id ON glm.flash USING btree (dataset_id)                    |
+
+** Dataset Functions
+
+
+*** Energy and Area
+
+We need a couple of functions to convert the quantized data to actual
+datasets. Using the [[https://www.ncdc.noaa.gov/gridsat/conusgoes-index.php?name=howto][NOAA FAQ]] and expecting it to be the same for all data, we
+use the above for our energy and area.  Energy is is Joules and area is in m2.
+
+
+#+BEGIN_SRC sql
+create or replace function energy_J (f in glm.flash, out J float)
+LANGUAGE SQL IMMUTABLE AS $$
+select (f.energy::float * 9.99996e-16) + 2.8515e-16 as J;
+$$;
+
+create or replace function area_m2 (f in glm.flash, out m2 float)
+LANGUAGE SQL IMMUTABLE AS $$
+select (f.energy::float * 152601.9) as m2;
+$$;
+
+#+END_SRC
+
+#+RESULTS:
+| CREATE FUNCTION |
+|-----------------|
+| CREATE FUNCTION |
+
+
+*** Location
+
+We convert the Latitude / Longitude into a centroid.  We aren't exactly sure
+about the sphereoid for the lat,lon.  Here we are assuming it's WGS84, which is
+what's used for the projected GOES grids.
+
+#+BEGIN_SRC sql
+create or replace function centroid (f in glm.flash, out centroid geometry(Point,4326))
+LANGUAGE SQL IMMUTABLE AS $$
+select st_setsrid(ST_MakePoint(f.lon,f.lat),4326) as centroid;
+$$;
+
+#+END_SRC
+
+#+RESULTS:
+| CREATE FUNCTION |
+|-----------------|
+
+We could conceivably use the area to create bigger regions, but it's unclear to
+me the best way to do that, so for now we'll just stick w/ centroid as our only
+point.  Later, we *could* use the event grid points, but not sure how helpful
+that would be.
+
+*** Duration
+
+Finally, we need to create the duration of the
+
+#+BEGIN_SRC sql
+create or replace function start_time (f in glm.flash, out t timestamp)
+LANGUAGE SQL IMMUTABLE AS $$
+with o as ( select time_coverage_start as s
+ from glm.dataset where dataset_id=f.dataset_id
+)
+select o.s+(((f.time_offset_of_first_event * 0.0003814756 ) -5) || ' seconds')::interval as t
+from o;
+$$;
+
+create or replace function stop_time (f in glm.flash, out t timestamp)
+LANGUAGE SQL IMMUTABLE AS $$
+with o as ( select time_coverage_start as s
+ from glm.dataset where dataset_id=f.dataset_id
+)
+select o.s+(((f.time_offset_of_last_event * 0.0003814756 ) -5) || ' seconds')::interval as t
+from o;
+$$;
+
+#+END_SRC
+
+#+RESULTS:
+| CREATE FUNCTION |
+|-----------------|
+| CREATE FUNCTION |

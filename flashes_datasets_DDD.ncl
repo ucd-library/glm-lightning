@@ -38,18 +38,16 @@ dataset_id=conform(flash_id,fin@id,0)
 flash_filename = "csv/YYYY/DDD/flashes.csv"
 
 ;---Write data to file
-  alist  = [/flash_id\
-,dataset_id\
-,time_offset_of_first_event\
-,time_offset_of_last_event\
-;,frame_time_offset_of_first_event\
-;,frame_time_offset_of_last_event\
-,lat\
-,lon\
-,area\
-,energy\
-,quality_flag\
+  alist  = [/ flash_id \
+  ,dataset_id \
+  ,time_offset_of_first_event \
+  ,time_offset_of_last_event \
+  ,lat \
+  ,lon \
+  ,area \
+  ,energy \
+  ,quality_flag \
 /]
-  format = "%d,%s,%d,%d,%d,%g,%g,%d,%d,%d"
+  format = "%hu,%s,%hu,%hu,%g,%g,%hu,%hu,%hhu"
   write_table(flash_filename, "a", alist, format)
 end

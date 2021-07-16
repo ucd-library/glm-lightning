@@ -23,7 +23,7 @@ INFO:
 	echo "GLM processing for ${d}."
 
 files:
-	[[ -d ${glm}/${yyyy}/${J} ]] || mkdir -p ${glm}/${yyyy}/${J} ]];\
+	[[ -d ${glm}/${yyyy}/${J} ]] || mkdir -p ${glm}/${yyyy}/${J};\
 	aws s3 cp s3://noaa-goes17/${gd} ${gd} --recursive --no-sign-request
 
 #datasets:${cd}/datasets.csv
