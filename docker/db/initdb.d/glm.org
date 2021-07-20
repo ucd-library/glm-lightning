@@ -66,8 +66,8 @@ create index flash_dataset_id on flash(dataset_id);
 | CREATE TABLE |
 |--------------|
 
-As an aside, you can get a review of the indexes that we do have with the
-following query
+As an aside, these [[https://www.postgresqltutorial.com/postgresql-indexes/postgresql-list-indexes/][Index Examples]] show how you can get a quick view of the
+indexes that you do have.
 
 
 #+BEGIN_SRC sql :tangle no
@@ -84,7 +84,6 @@ where schemaname='glm';
 | flash     | flash_dataset_id         | CREATE INDEX flash_dataset_id ON glm.flash USING btree (dataset_id)                    |
 
 ** Dataset Functions
-
 
 *** Energy and Area
 
@@ -164,3 +163,106 @@ $$;
 | CREATE FUNCTION |
 |-----------------|
 | CREATE FUNCTION |
+
+
+**** Duration Index
+
+Now we can use these functions to describe indices over our complete range of
+flashes.  For example
+
+#+BEGIN_SRC sql :tangle no
+create index flash_start_time on flash(start_time(flash));
+#+END_SRC
+
+And verify this is used by comparing a query on the start_time vs. the
+stop_time.  The difference using the index scan is very considerable (orders of magnitude)
+
+#+name:explain_start
+#+BEGIN_SRC sql :tangle no
+explain select
+ f.energy_J,f.area_m2,st_asEWKT(f.centroid),f.start_time,f.stop_time
+from flash f
+where '2021-05-28'::date < f.start_time
+and f.start_time < '2021-05-29'::date;
+#+END_SRC
+
+#+RESULTS: explain_start
+| QUERY PLAN                                                                                      |
+|-------------------------------------------------------------------------------------------------|
+| Index Scan using flash_start_time on flash f  (cost=0.56..776087.85 rows=218319 width=64)       |
+| Index Cond: ((start_time(f.*) > '2021-05-28'::date) AND (start_time(f.*) < '2021-05-29'::date)) |
+| JIT:                                                                                            |
+| Functions: 3                                                                                    |
+| Options: Inlining true, Optimization true, Expressions true, Deforming true                     |
+
+
+#+name:explain_stop
+#+BEGIN_SRC sql :tangle no
+explain select
+ f.energy_J,f.area_m2,st_asEWKT(f.centroid),f.start_time,f.stop_time
+from flash f
+where '2021-05-28'::date < f.stop_time
+and f.stop_time < '2021-05-29'::date;
+#+END_SRC
+
+#+RESULTS: explain_stop
+| QUERY PLAN                                                                                |
+|-------------------------------------------------------------------------------------------|
+| Seq Scan on flash f  (cost=0.00..23395623.89 rows=218319 width=64)                        |
+| Filter: (('2021-05-28'::date < stop_time(f.*)) AND (stop_time(f.*) < '2021-05-29'::date)) |
+| JIT:                                                                                      |
+| Functions: 3                                                                              |
+| Options: Inlining true, Optimization true, Expressions true, Deforming true               |
+
+Joining w/ the dataset table is actually nearly as fast as the extra index
+however since the dataset table is so much smaller.  Not quite as accurate however.
+
+#+name:explain_join
+#+BEGIN_SRC sql :tangle no
+explain
+select f.energy_J,f.area_m2,st_asEWKT(f.centroid),f.start_time,f.stop_time
+from flash f
+join dataset d using (dataset_id)
+where '2021-05-28'::date < d.time_coverage_start
+ and d.time_coverage_start < '2021-05-29'::date;
+#+END_SRC
+
+#+RESULTS: explain_join
+| QUERY PLAN                                                                                          |
+|-----------------------------------------------------------------------------------------------------|
+| Hash Join  (cost=27039.80..1499223.16 rows=224735 width=64)                                         |
+| Hash Cond: (f.dataset_id = d.dataset_id)                                                            |
+| ->  Seq Scan on flash f  (cost=0.00..932816.32 rows=43663732 width=116)                             |
+| ->  Hash  (cost=26987.47..26987.47 rows=4186 width=16)                                              |
+| ->  Seq Scan on dataset d  (cost=0.00..26987.47 rows=4186 width=16)                                 |
+| Filter: (('2021-05-28'::date < time_coverage_start) AND (time_coverage_start < '2021-05-29'::date)) |
+| JIT:                                                                                                |
+| Functions: 11                                                                                       |
+| Options: Inlining true, Optimization true, Expressions true, Deforming true                         |
+
+
+** Views
+
+Now, if you want to use these functions you can call them directly as in:
+
+#+BEGIN_SRC sql :tangle no
+select f.energy_J,f.area_m2,st_asEWKT(f.centroid),f.start_time,f.stop_time from flash f limit 5;
+#+END_SRC
+
+#+RESULTS:
+|        energy_j |     area_m2 | st_asewkt                          | start_time                 | stop_time                  |
+|-----------------+-------------+------------------------------------+----------------------------+----------------------------|
+| 1.406279526e-12 | 214558271.4 | SRID=4326;POINT(-139.317 6.44349)  | 2021-01-01 15:42:01.453804 | 2021-01-01 15:42:01.573206 |
+| 2.243276178e-12 | 342286061.7 | SRID=4326;POINT(-147.373 7.06065)  | 2021-01-01 15:42:11.437402 | 2021-01-01 15:42:11.628521 |
+|  2.06284326e-13 |  31435991.4 | SRID=4326;POINT(-169.171 6.12735)  | 2021-01-01 15:42:17.473872 | 2021-01-01 15:42:17.627225 |
+|  1.92027747e-12 |   292995648 | SRID=4326;POINT(175.772 11.2877)   | 2021-01-01 15:42:17.700469 | 2021-01-01 15:42:17.85344  |
+|    4.528497e-14 |   6867085.5 | SRID=4326;POINT(-156.662 -10.8493) | 2021-01-01 15:55:45.551997 | 2021-01-01 15:55:45.743116 |
+
+Or you could create a view as in
+
+#+BEGIN_SRC sql :tangle no
+create view flashes
+ as
+select f.energy_J,f.area_m2,st_asEWKT(f.centroid),f.start_time,f.stop_time
+from flash f;
+#+END_SRC
