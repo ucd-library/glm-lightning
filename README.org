@@ -148,3 +148,313 @@ Registry]] or the direct [[https://noaa-goes17.s3.amazonaws.com/index.html#GLM-L
 
 There is also some literature comparing the GOES GML to models
 [[https://doi.org/10.1175/WAF-D-19-0141.1]]
+
+
+** California Specific Data
+#+PROPERTY: header-args:sql :engine postgresql :cmdline "service=glm" :tangle yes
+
+   The glm.org file has most of the information for creating the required
+functions for the glm data.
+
+
+Using our 500m pixels from the dwr_grid data, we can get a general box of where
+the pixels are that we need.
+
+#+begin_src sql
+create table pixel (
+pid serial primary key,
+east integer,
+north integer,
+boundary geometry(polygon,3310)
+);
+
+insert into pixel (east,north,boundary)
+select
+east,north,
+st_setsrid(st_makebox2d(
+st_makepoint(east-250,north-250),
+st_makepoint(east+250,north+250)),3310) as boundary
+from cimis_pixels;
+
+CREATE INDEX glm_pixel_idx
+  ON glm.pixel
+  USING GIST (boundary);
+#+end_src
+
+#+RESULTS:
+| CREATE TABLE     |
+|------------------|
+| INSERT 0 1642286 |
+| CREATE INDEX     |
+
+#+begin_src sql :tangle no
+  with f as (
+       select st_transform(boundary,4326) as ll
+       from pixel_boundary
+          )
+          select
+          floor(min(st_xmin(ll))) xn,
+          ceil(max(st_xmax(ll))) as xx,
+          floor(min(st_ymin(ll))) as yn ,
+          ceil(max(st_ymax(ll))) as yx
+    from  f ;
+#+end_src
+
+#+RESULTS:
+|   xn |   xx | yn | yx |
+|------+------+----+----|
+| -125 | -114 | 32 | 43 |
+
+And now we can create a smaller set of pixels from this regions.  It's actually
+easier to do this on the input csv files, rather than the psql database, since
+there is no real
+
+We can also make some quick statistics of exactly how many lightning strikes we
+got for every day, as opposed to the CA ones.
+
+#+begin_src bash
+  find csv -name flashes.csv | xargs wc -l | while read n f; do  echo "$f,$n"; done | sort | tee flash_count.csv
+  find csv -name flashes.ca.csv | xargs wc -l | while read n f; do  echo "$f,$n"; done | sort | tee flash.ca_count.csv
+#+end_src
+
+
+#+begin_src sql
+    select count(*) from dataset;
+#+end_src
+
+#+RESULTS:
+|   count |
+|---------|
+| 4352224 |
+
+#+begin_src sql
+  delete from dataset
+         where dataset_id not in (select distinct dataset_id from flash)
+#+end_src
+
+#+RESULTS:
+| DELETE 4119746 |
+|----------------|
+
+And now we have many fewer datasets
+
+#+begin_src sql
+    select count(*) from dataset;
+#+end_src
+
+#+RESULTS:
+|  count |
+|--------|
+| 232478 |
+
+#+begin_src sql
+    drop table if exists pixel_flash;
+  create table pixel_flash (
+         pid integer references pixel(pid),
+         dataset_id uuid references dataset(dataset_id),
+         flash_id integer not null,
+         centroid geometry(point,3310)
+         );
+
+  insert into pixel_flash
+  select pid,dataset_id,flash_id,
+  st_transform(f.centroid,3310) as centroid
+  from flash f join pixel p on st_contains(p.boundary,st_transform(f.centroid,3310));
+
+#+end_src
+
+And now we can finally get some stats on our pixels!
+
+This
+
+#+begin_src sql
+  create materialized view flashes_date_hr as
+  with d as
+  ( select (f.start_time at time zone 'utc' at time zone 'america/los_angeles')::date as date,
+    extract(hour from f.start_time at time zone 'utc' at time zone 'america/los_angeles') as hour
+    from flash f
+  )
+  select date,hour,count(*) as count from d group by date,hour order by date,hour;
+#+end_src
+
+
+#+RESULTS:
+| SELECT 4753 |
+|-------------|
+
+#+begin_src sql
+  select date,sum(count) as count
+  from flashes_date_hr
+
+  group by date order by count desc
+  limit 50;
+#+end_src
+
+
+#+begin_src sql
+    create materialized view glm.flashes_pid_date_hr as
+    with d as
+    ( select pid,f.energy,(f.start_time at time zone 'utc' at time zone 'america/los_angeles')::date as date,
+      extract(hour from f.start_time at time zone 'utc' at time zone 'america/los_angeles') as hour
+      from flash f join pixel_flash pf on f.flash_id=pf.flash_id and f.dataset_id=pf.dataset_id
+    )
+    select pid,date,hour,sum(energy) as energy,
+    count(*) as count from d group by pid,date,hour order by date,hour,pid;
+#+end_src
+
+#+RESULTS:
+| SELECT 334786 |
+|---------------|
+
+#+begin_src sql
+  select * from glm.flashes_pid_date_hr
+         where extract(month from date) in (7,8,9,10)
+         order by count desc
+         limit 25
+#+end_src
+
+
+#+begin_src sql
+    create materialized view fire_year_threat as
+  with d as (
+  select *,extract(year from date) as year from flashes_pid_date_hr
+       where extract(month from date) in (7,8,9,10)
+       ),
+       intensity_by_year as (
+       select pid,year,sum(energy) as energy,sum(count) as count
+       from d
+       group by year,pid
+       )
+       select * from intensity_by_year
+         #+end_src
+
+#+RESULTS:
+| SELECT 133628 |
+|---------------|
+
+#+begin_src sql
+  select * from flashes_pid_date_hr
+         where date in ('2020-08-15'::date,'2020-08-16'::date,'2020-08-17'::date,'2020-08-18'::date)
+         order by count desc
+         limit 10
+#+end_src
+
+#+RESULTS:
+|     pid |       date | hour | count |
+|---------+------------+------+-------|
+|  762286 | 2020-08-16 |   17 |    40 |
+|  575223 | 2020-08-16 |   19 |    37 |
+|  865208 | 2020-08-15 |   17 |    35 |
+|  967304 | 2020-08-15 |   17 |    34 |
+|  587373 | 2020-08-16 |   18 |    33 |
+|  836352 | 2020-08-16 |   16 |    29 |
+| 1005100 | 2020-08-16 |   14 |    28 |
+|  586669 | 2020-08-16 |   18 |    21 |
+| 1002078 | 2020-08-15 |   17 |    21 |
+|  763165 | 2020-08-16 |   17 |    21 |
+
+
+#+begin_src sql
+    drop table if exists siege;
+  create table siege (
+         dataset_id uuid,
+         flash_id integer,
+         time timestamp with time zone,
+         date date,
+         energy integer,
+         flash geometry(Polygon,3310),
+         primary key (dataset_id,flash_id)
+         );
+#+end_src
+
+#+RESULTS:
+| DROP TABLE   |
+|--------------|
+| CREATE TABLE |
+
+#+begin_src sql
+    with d as (
+     select f.dataset_id,f.flash_id,
+     (f.start_time at time zone 'utc' at time zone 'america/los_angeles')::timestamp
+     as time,
+     f.energy,f.area_m2,f.centroid,
+     (f.start_time at time zone 'utc' at time zone 'america/los_angeles')::date as
+     date
+     from flash f join pixel_flash using (dataset_id,flash_id)
+     )
+     insert into siege(dataset_id,flash_id,time,date,energy,flash)
+     select dataset_id,flash_id,time,date,energy,
+     st_buffer(st_transform(centroid,3310),sqrt(area_m2))
+     from d where date in ('2020-08-15'::date,'2020-08-16'::date,'2020-08-17'::date)
+
+ #+end_src
+
+ #+RESULTS:
+ | INSERT 0 17088 |
+ |----------------|
+
+ We can also extend the flashes by their area for these regions. And summarize those.
+
+ #+begin_src sql
+      drop table if exists siege_pixel;
+    create table siege_pixel (
+           pid integer references pixel(pid),
+           dataset_id uuid references dataset(dataset_id),
+           flash_id integer not null,
+           date date
+           );
+
+    insert into siege_pixel
+    select pid,dataset_id,flash_id,
+    (f.start_time at time zone 'utc' at time zone 'america/los_angeles')::date as date
+    from flash f join pixel p
+    on st_within(p.boundary,st_buffer(st_transform(f.centroid,3310),sqrt(f.area_m2)/1.5)) and
+    (f.start_time at time zone 'utc' at time zone 'america/los_angeles')::date
+    in ('2020-08-15'::date,'2020-08-16'::date,'2020-08-17'::date,'2020-08-18'::date);
+#+end_src
+
+#+RESULTS:
+| DROP TABLE       |
+|------------------|
+| CREATE TABLE     |
+| INSERT 0 4679363 |
+
+#+begin_src sql
+  create table siege_pixel_flash (
+  pid integer,
+  date date,
+  flashes integer,
+  boundary geometry(Polygon,3310)
+  );
+#+end_src
+
+#+RESULTS:
+| CREATE TABLE |
+|--------------|
+
+#+begin_src sql
+
+    with spsum as (
+  select pid,date,count(*) as flashes
+  from siege_pixel
+  group by pid,date
+  )
+  insert into siege_pixel_flash
+  select pid,date,flashes,boundary
+       from spsum join pixel using(pid);
+#+end_src
+
+#+RESULTS:
+| INSERT 0 667053 |
+|-----------------|
+
+
+*** Calfire Data
+
+    We want to show fire symbols on the page, so we need the centroids of the
+    fires.
+
+    #+begin_src sql
+        SELECT AddGeometryColumn('calfire','fires','centroid',3310,'point',2);
+update calfire.fires set centroid=st_centroid(boundary);
+    #+end_src
