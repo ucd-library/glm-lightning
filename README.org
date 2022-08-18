@@ -156,41 +156,49 @@ There is also some literature comparing the GOES GML to models
    The glm.org file has most of the information for creating the required
 functions for the glm data.
 
-
-Using our 500m pixels from the dwr_grid data, we can get a general box of where
+Using our 500m pixels from the [[https://github.com/CSTARS/dwr-grid][dwr_grid]] data, we can get a general box of where
 the pixels are that we need.
 
 #+begin_src sql
-create table pixel (
-pid serial primary key,
-east integer,
-north integer,
-boundary geometry(polygon,3310)
-);
+  create temp table cimis_pixels (
+    east integer,
+    north integer,
+    foo integer);
 
-insert into pixel (east,north,boundary)
-select
-east,north,
-st_setsrid(st_makebox2d(
-st_makepoint(east-250,north-250),
-st_makepoint(east+250,north+250)),3310) as boundary
-from cimis_pixels;
+  \copy cimis_pixels from cimis_pixels.csv with CSV
 
-CREATE INDEX glm_pixel_idx
-  ON glm.pixel
-  USING GIST (boundary);
+  create table pixel (
+  pid serial primary key,
+  east integer,
+  north integer,
+  boundary geometry(polygon,3310)
+  );
+
+  insert into pixel (east,north,boundary)
+  select
+  east,north,
+  st_setsrid(st_makebox2d(
+  st_makepoint(east-250,north-250),
+  st_makepoint(east+250,north+250)),3310) as boundary
+  from cimis_pixels;
+
+  CREATE INDEX glm_pixel_idx
+    ON glm.pixel
+    USING GIST (boundary);
 #+end_src
 
 #+RESULTS:
 | CREATE TABLE     |
 |------------------|
+| COPY 1642286     |
+| CREATE TABLE     |
 | INSERT 0 1642286 |
 | CREATE INDEX     |
 
 #+begin_src sql :tangle no
   with f as (
        select st_transform(boundary,4326) as ll
-       from pixel_boundary
+       from pixel
           )
           select
           floor(min(st_xmin(ll))) xn,
@@ -212,13 +220,13 @@ there is no real
 We can also make some quick statistics of exactly how many lightning strikes we
 got for every day, as opposed to the CA ones.
 
-#+begin_src bash
+#+begin_src bash :tangle no
   find csv -name flashes.csv | xargs wc -l | while read n f; do  echo "$f,$n"; done | sort | tee flash_count.csv
   find csv -name flashes.ca.csv | xargs wc -l | while read n f; do  echo "$f,$n"; done | sort | tee flash.ca_count.csv
 #+end_src
 
 
-#+begin_src sql
+#+begin_src sql :tangle no
     select count(*) from dataset;
 #+end_src
 
@@ -227,7 +235,7 @@ got for every day, as opposed to the CA ones.
 |---------|
 | 4352224 |
 
-#+begin_src sql
+#+begin_src sql :tangle no
   delete from dataset
          where dataset_id not in (select distinct dataset_id from flash)
 #+end_src
@@ -238,7 +246,7 @@ got for every day, as opposed to the CA ones.
 
 And now we have many fewer datasets
 
-#+begin_src sql
+#+begin_src sql :tangle no
     select count(*) from dataset;
 #+end_src
 
@@ -263,6 +271,12 @@ And now we have many fewer datasets
 
 #+end_src
 
+#+RESULTS:
+| DROP TABLE      |
+|-----------------|
+| CREATE TABLE    |
+| INSERT 0 425923 |
+
 And now we can finally get some stats on our pixels!
 
 This
@@ -282,13 +296,23 @@ This
 | SELECT 4753 |
 |-------------|
 
-#+begin_src sql
+#+begin_src sql :tangle no
   select date,sum(count) as count
   from flashes_date_hr
 
   group by date order by count desc
-  limit 50;
+  limit 5;
 #+end_src
+
+#+RESULTS:
+|       date | count |
+|------------+-------|
+| 2019-09-05 | 21005 |
+| 2020-08-16 | 19232 |
+| 2019-06-13 | 18195 |
+| 2020-05-30 | 16975 |
+| 2020-06-24 | 16094 |
+
 
 
 #+begin_src sql
@@ -306,12 +330,21 @@ This
 | SELECT 334786 |
 |---------------|
 
-#+begin_src sql
+#+begin_src sql :tangle no
   select * from glm.flashes_pid_date_hr
          where extract(month from date) in (7,8,9,10)
          order by count desc
-         limit 25
+         limit 5
 #+end_src
+
+#+RESULTS:
+|     pid |       date | hour | energy | count |
+|---------+------------+------+--------+-------|
+| 1174222 | 2019-07-05 |   11 |   2394 |    86 |
+| 1175320 | 2019-07-06 |   11 |   3107 |    84 |
+| 1172033 | 2019-07-01 |   11 |   7143 |    84 |
+| 1175340 | 2019-07-08 |   11 |   1141 |    74 |
+|  265129 | 2020-07-26 |   18 |   3300 |    68 |
 
 
 #+begin_src sql
@@ -328,11 +361,8 @@ This
        select * from intensity_by_year
          #+end_src
 
-#+RESULTS:
-| SELECT 133628 |
-|---------------|
 
-#+begin_src sql
+#+begin_src sql :tangle no
   select * from flashes_pid_date_hr
          where date in ('2020-08-15'::date,'2020-08-16'::date,'2020-08-17'::date,'2020-08-18'::date)
          order by count desc
@@ -340,18 +370,18 @@ This
 #+end_src
 
 #+RESULTS:
-|     pid |       date | hour | count |
-|---------+------------+------+-------|
-|  762286 | 2020-08-16 |   17 |    40 |
-|  575223 | 2020-08-16 |   19 |    37 |
-|  865208 | 2020-08-15 |   17 |    35 |
-|  967304 | 2020-08-15 |   17 |    34 |
-|  587373 | 2020-08-16 |   18 |    33 |
-|  836352 | 2020-08-16 |   16 |    29 |
-| 1005100 | 2020-08-16 |   14 |    28 |
-|  586669 | 2020-08-16 |   18 |    21 |
-| 1002078 | 2020-08-15 |   17 |    21 |
-|  763165 | 2020-08-16 |   17 |    21 |
+|     pid |       date | hour | energy | count |
+|---------+------------+------+--------+-------|
+|  762286 | 2020-08-16 |   17 |   1139 |    40 |
+|  575223 | 2020-08-16 |   19 |   1308 |    37 |
+|  865208 | 2020-08-15 |   17 |    763 |    35 |
+|  967304 | 2020-08-15 |   17 |    730 |    34 |
+|  587373 | 2020-08-16 |   18 |   1027 |    33 |
+|  836352 | 2020-08-16 |   16 |    709 |    29 |
+| 1005100 | 2020-08-16 |   14 |    751 |    28 |
+|  763165 | 2020-08-16 |   17 |    373 |    21 |
+|  586669 | 2020-08-16 |   18 |    666 |    21 |
+| 1002078 | 2020-08-15 |   17 |    401 |    21 |
 
 
 #+begin_src sql
@@ -432,6 +462,7 @@ This
 | CREATE TABLE |
 |--------------|
 
+
 #+begin_src sql
 
     with spsum as (
@@ -452,9 +483,18 @@ This
 *** Calfire Data
 
     We want to show fire symbols on the page, so we need the centroids of the
-    fires.
+    fires.  These fires came from the CalFIRE gis database, the fire20_1.gdb.
+
+    #+begin_src bash
+ogr2ogr -nlt CONVERT_TO_LINEAR -f "PostgreSQL" PG:"service=glm" fire20_1.gdb firep20_1
+    #+end_src
 
     #+begin_src sql
-        SELECT AddGeometryColumn('calfire','fires','centroid',3310,'point',2);
-update calfire.fires set centroid=st_centroid(boundary);
+      alter table firep20_1 set schema calfire;
+
+      set search_path=glm,calfire,public,topology;
+      alter table calfire.firep20_1 rename to fires;
+
+      SELECT AddGeometryColumn('calfire','fires','centroid',3310,'point',2);
+      update calfire.fires set centroid=st_centroid(shape);
     #+end_src
