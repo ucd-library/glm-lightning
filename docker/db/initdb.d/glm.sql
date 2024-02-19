@@ -32,7 +32,7 @@ $$;
 
 create or replace function area_m2 (f in glm.flash, out m2 float)
 LANGUAGE SQL IMMUTABLE AS $$
-select (f.energy::float * 152601.9) as m2;
+select (f.area::float * 152601.9) as m2;
 $$;
 
 create or replace function centroid (f in glm.flash, out centroid geometry(Point,4326))
